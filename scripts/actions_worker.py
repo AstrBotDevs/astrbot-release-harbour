@@ -60,17 +60,17 @@ def request_studio(path, payload=None, download=None):
                 + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"],
             },
         )
-        with opener.open(identity_request, timeout=30) as response:
-            token = json.load(response)["value"]
-        request = urllib.request.Request(
-            f"{origin}/api/actions/{os.environ['STUDIO_RUN_ID']}/{path}",
-            data=json.dumps(payload).encode() if payload is not None else None,
-            headers={
-                "Authorization": "Bearer " + token,
-                "Content-Type": "application/json",
-            },
-        )
         try:
+            with opener.open(identity_request, timeout=30) as response:
+                token = json.load(response)["value"]
+            request = urllib.request.Request(
+                f"{origin}/api/actions/{os.environ['STUDIO_RUN_ID']}/{path}",
+                data=json.dumps(payload).encode() if payload is not None else None,
+                headers={
+                    "Authorization": "Bearer " + token,
+                    "Content-Type": "application/json",
+                },
+            )
             with opener.open(request, timeout=180) as response:
                 if download is None:
                     return json.load(response)
@@ -87,12 +87,15 @@ def request_studio(path, payload=None, download=None):
                     raise RuntimeError("Execution bundle checksum mismatch")
                 return digest.hexdigest()
         except urllib.error.HTTPError as exc:
-            if exc.code != 425 or attempt == 24:
+            if exc.code not in {425, 429, 500, 502, 503, 504, 530} or attempt == 24:
                 raise RuntimeError(
                     f"Studio worker API returned HTTP {exc.code}"
                 ) from None
-            time.sleep(5)
-    raise RuntimeError("Dispatch registration timed out")
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == 24:
+                raise RuntimeError("Worker connection failed after retries") from None
+        time.sleep(5)
+    raise RuntimeError("Worker connection timed out")
 
 
 def main():
