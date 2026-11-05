@@ -1,0 +1,72 @@
+name: Harbor Studio evaluation
+run-name: studio-${{ inputs.studio_run_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      studio_url:
+        description: Public HTTPS origin of Harbor Studio
+        required: true
+        type: string
+      studio_run_id:
+        description: Frozen Studio run identifier
+        required: true
+        type: string
+permissions:
+  contents: read
+  id-token: write
+  packages: read
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.manifest.outputs.matrix }}
+      concurrency: ${{ steps.manifest.outputs.concurrency }}
+      runner: ${{ steps.manifest.outputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: manifest
+        env:
+          STUDIO_URL: ${{ inputs.studio_url }}
+          STUDIO_RUN_ID: ${{ inputs.studio_run_id }}
+        run: python3 scripts/actions_worker.py manifest
+  evaluate:
+    name: studio-${{ matrix.id }}
+    needs: prepare
+    runs-on: ${{ needs.prepare.outputs.runner }}
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.prepare.outputs.concurrency) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - name: Authenticate to an optional private registry
+        env:
+          REGISTRY_HOST: ${{ vars.STUDIO_REGISTRY_HOST }}
+          REGISTRY_USERNAME: ${{ secrets.STUDIO_REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.STUDIO_REGISTRY_PASSWORD }}
+        run: |
+          if [ -n "$REGISTRY_HOST" ]; then
+            printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" --username "$REGISTRY_USERNAME" --password-stdin
+          fi
+      - name: Execute frozen Harbor trial
+        env:
+          STUDIO_URL: ${{ inputs.studio_url }}
+          STUDIO_RUN_ID: ${{ inputs.studio_run_id }}
+          STUDIO_JOB_ID: ${{ matrix.id }}
+          LITELLM_LOCAL_MODEL_COST_MAP: 'True'
+        run: python3 scripts/actions_worker.py run
+      - name: Upload native results and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-${{ matrix.id }}
+          path: ${{ runner.temp }}/harbor-studio/results.zip
+          if-no-files-found: warn
+          retention-days: 7
